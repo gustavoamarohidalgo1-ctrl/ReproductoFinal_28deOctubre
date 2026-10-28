@@ -11,7 +11,7 @@
     <string name="uninterrupted_playback">Evitar restricciones de batería</string>
     <string name="battery_settings_unavailable">No se pudieron abrir los ajustes de batería.</string>
     <string name="boot_resume_title">Reanudar al encender</string>
-    <string name="boot_resume_help">Si estaba reproduciendo, intenta recuperar la posición y el volumen al encender. Requiere arranque sin PIN y que el fabricante permita el autoarranque.</string>
+    <string name="boot_resume_help">Se activa una vez para esta instalación. Si estaba reproduciendo, intenta recuperar la posición y el volumen al encender. Requiere arranque sin PIN y que el fabricante permita el autoarranque.</string>
     <string name="boot_resume_save_failed">No se pudo guardar la opción de reanudación.</string>
     <string name="playback_progress">Posición de reproducción</string>
     <string name="repeat_off">Bucle: apagado</string>

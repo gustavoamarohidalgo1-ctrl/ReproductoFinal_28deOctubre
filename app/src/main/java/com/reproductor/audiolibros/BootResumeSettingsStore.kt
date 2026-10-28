@@ -42,10 +42,10 @@ internal class BootResumeSettingsStore(context: Context) {
         }
     } catch (_: Exception) { false }
 
-    fun write(enabled: Boolean): Boolean {
+    fun enable(): Boolean {
         var stream: FileOutputStream? = null
         return try {
-            val bytes = JSONObject().put("version", 1).put("enabled", enabled).toString().toByteArray(Charsets.UTF_8)
+            val bytes = JSONObject().put("version", 1).put("enabled", true).toString().toByteArray(Charsets.UTF_8)
             stream = file.startWrite()
             stream.write(bytes)
             val written = Os.fstat(stream.fd)

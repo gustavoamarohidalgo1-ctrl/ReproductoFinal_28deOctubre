@@ -59,7 +59,6 @@ class MainActivity : AppCompatActivity() {
     private val currentTimeLabel = DurationLabel()
     private val totalTimeLabel = DurationLabel()
     private val unknownDurationText by lazy { getString(R.string.duration_unknown) }
-    private var submittedQueueRevision: String? = null
     private var cacheTicket: Long? = null
     private var sizeLoad: Future<*>? = null
     private var sizeCancellation: CancellationSignal? = null
@@ -71,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private val bootResumeCommand = SessionCommand(BootResumeCommands.ACTION_SET_ENABLED, Bundle.EMPTY)
     private var bootResumePending: ListenableFuture<SessionResult>? = null
     private var updatingBootResumeSwitch = false
+    private var confirmedBootResume: Boolean? = null
+    private var awaitingBootResumeExtra: Boolean? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private var isSeeking = false
@@ -95,9 +96,6 @@ class MainActivity : AppCompatActivity() {
     private val controllerListener = object : MediaController.Listener {
         override fun onExtrasChanged(controller: MediaController, extras: Bundle) {
             if (this@MainActivity.controller === controller) {
-                if (extras.getString(PlaybackCommands.EXTRA_QUEUE_REVISION) == submittedQueueRevision) {
-                    submittedQueueRevision = null
-                }
                 updateAllUi()
             }
         }
@@ -237,7 +235,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun releaseController() {
         bootResumePending = null
-        submittedQueueRevision = null
+        awaitingBootResumeExtra = null
         isSeeking = false
         seekingMediaId = null
         binding.playPauseButton.isEnabled = false
@@ -556,47 +554,27 @@ class MainActivity : AppCompatActivity() {
         val snapshot = catalogue ?: return
         val items = snapshot.derived.mediaItems
         val item = items.getOrNull(index) ?: return
-        val revision = snapshot.derived.queueRevision
         // MediaController masks native commands immediately, so rapid A → B → A taps
         // keep the latest selection and remain ordered with pause/seek commands.
         if (c.currentMediaItem?.mediaId == item.mediaId) {
             if (c.playbackState == Player.STATE_IDLE) c.prepare()
             else if (c.playbackState == Player.STATE_ENDED) c.seekTo(0)
             if (!c.playWhenReady) c.play()
-        } else if ((c.sessionExtras.getString(PlaybackCommands.EXTRA_QUEUE_REVISION) == revision ||
-                submittedQueueRevision == revision) &&
-            index < c.mediaItemCount && c.getMediaItemAt(index).mediaId == item.mediaId &&
-            c.isCommandAvailable(Player.COMMAND_SEEK_TO_MEDIA_ITEM)
-        ) {
-            // The service translates TIME_UNSET to this track's saved bookmark.
-            // No complete library serialization is needed for an existing queue.
-            c.seekTo(index, C.TIME_UNSET)
-            c.prepare()
-            c.play()
         } else {
-            replaceQueueAndPlay(c, items, revision, index)
+            // The library is a picker, not a playback queue. Transfer only the
+            // selected audiobook; TIME_UNSET restores that file's own bookmark.
+            c.setMediaItems(listOf(item), 0, C.TIME_UNSET)
+            c.prepare()
+            if (!c.playWhenReady) c.play()
         }
         updateAllUi()
-    }
-
-    private fun replaceQueueAndPlay(
-        controller: MediaController,
-        items: List<MediaItem>,
-        revision: String,
-        index: Int
-    ) {
-        // Subsequent taps can select by index while the first full submission is in flight.
-        submittedQueueRevision = revision
-        controller.setMediaItems(PlaybackCommands.attachQueueRevision(items, revision), index, C.TIME_UNSET)
-        controller.prepare()
-        if (!controller.playWhenReady) controller.play()
     }
 
     // ---------- Controles ----------
 
     private fun setupControls() {
         binding.bootResumeSwitch.setOnCheckedChangeListener { _, checked ->
-            if (!updatingBootResumeSwitch) setBootResumeEnabled(checked)
+            if (!updatingBootResumeSwitch && checked) enableBootResume()
         }
         binding.batteryOptimizationButton.setOnClickListener { requestIgnoreBatteryOptimizations() }
         binding.playPauseButton.setOnClickListener {
@@ -662,23 +640,32 @@ class MainActivity : AppCompatActivity() {
         val ready = hasRestoredPlayback() && c != null &&
             c.isSessionCommandAvailable(bootResumeCommand)
         if (bootResumePending == null) {
+            if (ready && c!!.sessionExtras.containsKey(BootResumeCommands.EXTRA_ENABLED)) {
+                val reported = c.sessionExtras.getBoolean(BootResumeCommands.EXTRA_ENABLED)
+                if (awaitingBootResumeExtra == null || awaitingBootResumeExtra == reported) {
+                    confirmedBootResume = reported
+                    awaitingBootResumeExtra = null
+                }
+            }
             updatingBootResumeSwitch = true
-            binding.bootResumeSwitch.isChecked = if (ready) {
-                c!!.sessionExtras.getBoolean(BootResumeCommands.EXTRA_ENABLED, false)
-            } else false
+            binding.bootResumeSwitch.isChecked = confirmedBootResume == true
             updatingBootResumeSwitch = false
         }
-        binding.bootResumeSwitch.isEnabled = ready && bootResumePending == null
+        val showPrompt = confirmedBootResume == false
+        binding.bootResumeSwitch.visibility = if (showPrompt) View.VISIBLE else View.GONE
+        binding.bootResumeHelp.visibility = if (showPrompt) View.VISIBLE else View.GONE
+        binding.bootResumeSwitch.isEnabled = ready && confirmedBootResume != null &&
+            bootResumePending == null && awaitingBootResumeExtra == null
     }
 
-    private fun setBootResumeEnabled(enabled: Boolean) {
+    private fun enableBootResume() {
         val c = controller
         if (!hasRestoredPlayback() || c == null || !c.isSessionCommandAvailable(bootResumeCommand) ||
-            bootResumePending != null) {
+            bootResumePending != null || awaitingBootResumeExtra != null) {
             updateBootResumeSwitch()
             return
         }
-        val args = Bundle().apply { putBoolean(BootResumeCommands.ARG_ENABLED, enabled) }
+        val args = Bundle().apply { putBoolean(BootResumeCommands.ARG_ENABLED, true) }
         val future = try {
             c.sendCustomCommand(bootResumeCommand, args)
         } catch (_: Exception) {
@@ -695,6 +682,10 @@ class MainActivity : AppCompatActivity() {
                 future.get().resultCode == SessionResult.RESULT_SUCCESS
             } catch (_: Exception) {
                 false
+            }
+            if (success) {
+                confirmedBootResume = true
+                awaitingBootResumeExtra = true
             }
             updateBootResumeSwitch()
             if (!success) Snackbar.make(binding.root, R.string.boot_resume_save_failed, Snackbar.LENGTH_LONG).show()

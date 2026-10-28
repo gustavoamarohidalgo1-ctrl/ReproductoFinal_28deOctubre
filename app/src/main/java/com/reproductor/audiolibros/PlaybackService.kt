@@ -85,6 +85,8 @@ class PlaybackService : MediaSessionService() {
     private var urgentPersistenceRequest = 0L
     private var lastEmptyWriteRequest = 0L
     private var lastCheckpointWriteRequest = 0L
+    private var lastCheckpointSubmittedAtMs: Long? = null
+    private var lastAutomaticRepeatTarget: Pair<Long, Int>? = null
     private val persistenceRetry = PlaybackPersistenceRetryPolicy()
     private val stateWriter = LatestTaskExecutor(disk) { error ->
         Log.e(TAG, "No se pudo guardar el estado de reproducción", error)
@@ -180,14 +182,14 @@ class PlaybackService : MediaSessionService() {
             @Suppress("DEPRECATION")
             val enabled = args.get(BootResumeCommands.ARG_ENABLED) as? Boolean
                 ?: return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+            if (!enabled) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
             val result = SettableFuture.create<SessionResult>()
             pendingSettingsResults.add(result)
             disk.execute {
-                val saved = bootSettings.write(enabled)
+                val saved = bootSettings.enable()
                 handler.post {
                     if (!destroyed && saved) {
-                        bootResumeEnabled = enabled
-                        if (!enabled) bootResumeRequested = false
+                        bootResumeEnabled = true
                         saveCheckpoint(force = true, urgent = true)
                         publishSessionState()
                     }
@@ -208,6 +210,12 @@ class PlaybackService : MediaSessionService() {
             intent: Intent
         ): Boolean = true
 
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>
+        ): ListenableFuture<List<MediaItem>> = Futures.immediateFuture(emptyList())
+
         override fun onSetMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
@@ -225,8 +233,13 @@ class PlaybackService : MediaSessionService() {
             val position = if (startPositionMs == C.TIME_UNSET && index >= 0) {
                 positionStore.getPosition(mediaItems[index].mediaId)
             } else startPositionMs
+            // The selected audiobook is the entire playback session. Normalize
+            // older controllers' library queues before Media3 can play them.
+            val selectedItems = if (index >= 0) listOf(mediaItems[index]) else emptyList()
             return Futures.immediateFuture(
-                MediaSession.MediaItemsWithStartPosition(mediaItems, index, position)
+                MediaSession.MediaItemsWithStartPosition(
+                    selectedItems, if (selectedItems.isEmpty()) C.INDEX_UNSET else 0, position
+                )
             )
         }
 
@@ -293,6 +306,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (restoring || destroyed) return
+            lastAutomaticRepeatTarget = null
             desiredPlaying = playWhenReady
             if (!playWhenReady) {
                 cancelRecovery()
@@ -336,6 +350,7 @@ class PlaybackService : MediaSessionService() {
             if (restoring || destroyed) return
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
                 generation = nextGeneration(generation)
+                lastAutomaticRepeatTarget = null
                 queueDirty = true
                 queueRevision = if (player.mediaItemCount > 0) {
                     player.getMediaItemAt(0).mediaMetadata.extras
@@ -355,11 +370,21 @@ class PlaybackService : MediaSessionService() {
             reason: Int
         ) {
             if (restoring || destroyed) return
-            oldPosition.mediaItem?.let {
-                val finished = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
-                positionStore.savePosition(
-                    it.mediaId, if (finished) 0L else oldPosition.positionMs, force = true
-                )
+            val finished = reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION
+            val oldItem = oldPosition.mediaItem
+            val newItem = newPosition.mediaItem
+            // A repeat of this same item needs one current bookmark, not an
+            // intermediate zero followed by a second forced preferences write.
+            val sameAutomaticRepeat = finished && snapshotLoaded && oldItem != null && newItem != null &&
+                oldPosition.mediaItemIndex == newPosition.mediaItemIndex && oldItem.mediaId == newItem.mediaId &&
+                player.currentMediaItemIndex == newPosition.mediaItemIndex && player.currentMediaItem?.mediaId == newItem.mediaId
+            if (!sameAutomaticRepeat) lastAutomaticRepeatTarget = null
+            oldItem?.let {
+                if (!sameAutomaticRepeat) {
+                    positionStore.savePosition(
+                        it.mediaId, if (finished) 0L else oldPosition.positionMs, force = true
+                    )
+                }
             }
             when (reason) {
                 Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> {
@@ -372,7 +397,20 @@ class PlaybackService : MediaSessionService() {
                 }
                 Player.DISCONTINUITY_REASON_SEEK, Player.DISCONTINUITY_REASON_REMOVE -> resetProgressWatch()
             }
-            saveCheckpoint(force = true)
+            val target = generation to newPosition.mediaItemIndex
+            val previous = lastSubmittedCheckpoint
+            val now = SystemClock.elapsedRealtime()
+            val submittedAt = lastCheckpointSubmittedAtMs
+            // Very short clips can wrap many times between heartbeats. Keep the
+            // first wrap immediate, then share the normal two-second checkpoint
+            // window. Manual actions and other tracks never use this gate. A
+            // failed request clears lastSubmittedCheckpoint so it can be retried.
+            val coalesce = sameAutomaticRepeat && lastAutomaticRepeatTarget == target && !queueDirty &&
+                previous != null && previous.generation == generation && previous.index == target.second &&
+                previous.desiredPlaying == desiredPlaying && submittedAt != null &&
+                now >= submittedAt && now - submittedAt < CHECKPOINT_INTERVAL_MS
+            if (sameAutomaticRepeat) lastAutomaticRepeatTarget = target
+            if (!coalesce) saveCheckpoint(force = true)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -476,7 +514,9 @@ class PlaybackService : MediaSessionService() {
                     generation = nextGeneration(maxOf(generation, snapshot.generation))
                     queueDirty = true
                     restoring = true
-                    player.setMediaItems(snapshot.queue, snapshot.index, snapshot.positionMs)
+                    // Migrate previous versions' library queues to their selected
+                    // audiobook without losing its position or playback intent.
+                    player.setMediaItems(listOf(snapshot.queue[snapshot.index]), 0, snapshot.positionMs)
                     restoring = false
                     resetProgressWatch()
                     resumeAfterSystemRestart()
@@ -550,9 +590,13 @@ class PlaybackService : MediaSessionService() {
             // Buffer original encoded samples; no transcoding, bitrate cap or audio effects.
             // 120 seconds of 320 kbps audio is about 4.8 MB. Keep the default byte
             // threshold as well. It is a soft buffering target, not a total RAM cap.
+            // Local sources can be read again on a backward seek. Retaining ten
+            // seconds behind playback could consume the whole byte target for
+            // high-rate PCM, leaving little forward data before Media3 discards
+            // the back buffer. Reserve those allocations for upcoming audio.
             .setLoadControl(DefaultLoadControl.Builder()
                 .setBufferDurationsMs(60_000, 120_000, 2_500, 5_000)
-                .setBackBuffer(10_000, false)
+                .setBackBuffer(0, false)
                 .build())
             .setAudioAttributes(
                 AudioAttributes.Builder().setUsage(C.USAGE_MEDIA)
@@ -745,6 +789,7 @@ class PlaybackService : MediaSessionService() {
             List(player.mediaItemCount) { player.getMediaItemAt(it) }.also { capturedQueue = it }
         } else capturedQueue!!
         lastSubmittedCheckpoint = checkpoint
+        lastCheckpointSubmittedAtMs = SystemClock.elapsedRealtime()
         lastCheckpointWriteRequest = request
         queueDirty = false
         submitPersistence(

@@ -1,9 +1,18 @@
 # Reproductor de Audiolibros (Android)
 
-Versión actual: **2.1.0**. [Descargar APK](https://github.com/gustavoamarohidalgo1-ctrl/Reproductor_28_Octubre/releases/download/v2.1.0/Reproductor-2.1.0.apk)
-· [Publicación y archivos de validación](https://github.com/gustavoamarohidalgo1-ctrl/Reproductor_28_Octubre/releases/tag/v2.1.0).
+Versión actual: **2.1.5**, con precarga de audio por reproducir, una reserva PCM
+mayor frente a retrasos de alimentación y diagnósticos acotados de buffering y salida.
+Conserva el audiolibro seleccionado,
+menos escrituras durante repeticiones rápidas y reanudación opcional al encender.
+[Descargar el APK 2.1.5](https://github.com/gustavoamarohidalgo1-ctrl/ReproductoFinal_28deOctubre/releases/download/v2.1.5/Reproductor-2.1.5.apk) · [Notas de la versión](https://github.com/gustavoamarohidalgo1-ctrl/ReproductoFinal_28deOctubre/releases/tag/v2.1.5).
 La recuperación automática tras reinicio se verificó en un emulador Android 16;
 la comprobación en el Redmi Note 14 4G del usuario sigue pendiente.
+
+La versión 2.1.5 se compiló con R8 y se instaló como actualización conservando los
+datos; se confirmó la versión y el hash del APK instalado. No se ejecutaron nuevas
+pruebas funcionales para esta versión. Las comprobaciones de la versión 2.1.4 y los
+informes históricos no garantizan la ausencia de chasquidos en el Redmi. No hay un
+ensayo de 24 horas activo ni una validación acústica de 24 horas completada.
 
 App nativa Android para reproducir audiolibros y música de forma prolongada,
 con controles de reproducción exclusivos dentro de la aplicación:
@@ -16,23 +25,35 @@ con controles de reproducción exclusivos dentro de la aplicación:
   estos ajustes también al recuperarse. La pausa manual continúa funcionando.
 - **Motor aislado**: el servicio se ejecuta en un proceso independiente de la
   interfaz, para que un fallo de la pantalla no termine también el audio.
-- **Recuperación**: conserva la cola y el punto de escucha, reintenta errores,
-  detecta cuando la posición deja de avanzar y pasa al siguiente archivo si
-  el actual no puede reproducirse.
+- **Recuperación**: conserva el audiolibro seleccionado y el punto de escucha, reintenta errores
+  y detecta cuando la posición deja de avanzar. Nunca selecciona otro archivo
+  automáticamente ante un fallo.
 - **Reanudación al encender (opcional)**: en teléfonos que arrancan sin PIN,
   patrón ni contraseña, intenta recuperar automáticamente la última reproducción
   y su volumen multimedia. Se activa una vez con **Reanudar al encender** y respeta
   una pausa previa. Necesita que el sistema entregue el aviso de inicio y permita
   el servicio; el fabricante puede imponer requisitos adicionales de autoarranque.
+  El interruptor y su explicación desaparecen cuando el servicio confirma la
+  activación. Se configura una vez por instalación y no hay menú de desactivación. El ajuste independiente de autoarranque de HyperOS no se modifica.
 - **Mayor reserva de audio**: precarga hasta 120 segundos de muestras originales,
   con un umbral adicional de datos almacenados (no es un límite total de RAM). A 320 kbps, 120 segundos son aproximadamente
   4,8 MB de audio comprimido. No convierte archivos ni reduce su bitrate.
 - **Reserva de salida frente a cargas breves**: el búfer PCM de `AudioTrack` solicita
-  un objetivo de 750 a 1.500 ms, frente a los 250 a 750 ms predeterminados de Media3
+  un objetivo de 2.000 a 3.000 ms (antes, 750 a 1.500 ms), frente a los 250 a 750 ms predeterminados de Media3
   1.6.1. Es distinto de la precarga de archivos: conserva más audio ya decodificado
   para tolerar retrasos breves al abrir otras apps. El mínimo de la plataforma puede
   exigir una capacidad mayor. No cambia las muestras ni garantiza que el búfer esté
-  siempre lleno.
+  siempre lleno. Consume algo más de RAM y puede aumentar la latencia según la salida.
+  La comparación con una pausa deliberada de alimentación no reproduce por sí sola
+  los cortes del Redmi cada 20–30 minutos; su causa sigue sin estar identificada.
+- **Precarga hacia delante**: no retiene diez segundos de audio ya escuchado en el
+  mismo asignador. En PCM de alta tasa, esa reserva anterior podía consumir el objetivo
+  de bytes antes de la protección de Media3 que la descarta cuando falta audio futuro.
+  Los saltos hacia atrás siguen disponibles y releen el archivo local; pueden tardar
+  más si el almacenamiento es lento. No cambia la posición guardada ni las muestras.
+- **Diagnóstico de discontinuidades**: contadores y tiempos de underruns, buffering,
+  errores y creación/liberación de la salida, sin sondeo periódico ni escrituras
+  adicionales a archivos. Los registros están limitados y no contienen títulos ni rutas.
 - **Trabajo secundario de menor prioridad**: las consultas, comparación de biblioteca
   y metadatos opcionales usan un trabajador con prioridad de fondo. Media3 conserva
   su hilo de reproducción con prioridad de audio; la restauración y el guardado
@@ -57,20 +78,16 @@ con controles de reproducción exclusivos dentro de la aplicación:
   conservando la precisión de las muestras al unir vueltas con metadatos gapless.
 - **Memoria de posición por archivo**: cada audiolibro continúa donde lo dejaste.
 - Tocar de nuevo el audio que está sonando conserva la reproducción sin volver
-  a cargar la cola. La biblioteca se actualiza al añadir o retirar archivos.
+  a cargar el archivo. La biblioteca se actualiza al añadir o retirar archivos.
 - La biblioteca conserva una caché inmutable entre recreaciones; compara los cambios
   fuera del hilo principal y solo actualiza las filas necesarias. Seleccionar otra
-  pista de la misma biblioteca usa un comando nativo pequeño, conserva el marcador
-  y evita transferir nuevamente todos los archivos al servicio. Los empates de
+  pista conserva su marcador y transfiere únicamente ese archivo al servicio. Los empates de
   carpeta y título se resuelven por ID, para mantener un orden estable entre consultas.
 - Desde Android 11 / API 30, la versión y generación de MediaStore de cada volumen
   permiten reutilizar un catálogo válido sin volver a recorrer todos sus archivos.
   Los cambios, avisos del proveedor y refrescos manuales invalidan esa comprobación;
   si el proveedor no la admite o devuelve un estado inconsistente, se realiza un
   escaneo completo. Los Android anteriores conservan el escaneo habitual.
-- La revisión de la cola incluye únicamente los campos enviados al reproductor.
-  Cambiar el tamaño o carpeta de un archivo no obliga a retransmitir la biblioteca
-  si su orden y sus datos de reproducción siguen iguales.
 - Las reordenaciones masivas tienen un límite de un millón de comparaciones. Si
   se supera, la lista se refresca completa conservando la selección y el anclaje
   visible, para no monopolizar el trabajador de biblioteca con un diff costoso.
@@ -83,37 +100,46 @@ con controles de reproducción exclusivos dentro de la aplicación:
   indicador de la pista activa; no se abre cada archivo al cargar la biblioteca.
 - Al volver a abrir la app en pausa, muestra el tiempo guardado y la barra de
   progreso sin necesitar reproducir el audio. La duración también se guarda con
-  la cola para mostrarla aunque la biblioteca no esté disponible. Durante la
+  el estado del archivo para mostrarla aunque la biblioteca no esté disponible. Durante la
   restauración inicial muestra un indicador de carga, en vez de un falso 0:00.
 - La notificación abre la aplicación para acceder al botón de reproducción/pausa.
 
 ## Recuperación de fallos
 
 En condiciones normales, el servicio guarda un punto de recuperación cada dos
-segundos mientras se reproduce, además de guardar al pausar o cambiar de pista. La cola solo se
-reescribe cuando cambia o debe actualizarse su ventana de recuperación. Las escrituras se
-hacen fuera del hilo principal. La cola se codifica una sola vez por entrada y se
-escribe por bloques, evitando una segunda copia completa del JSON. Vaciarla deja
-un registro atómico persistente que impide recuperar una cola anterior. El escritor admite una tarea activa y únicamente
-el último estado pendiente, para no acumular posiciones antiguas si el disco
-se ralentiza. Cada estado lleva la cola que necesita y una pausa reciente reemplaza
-las actualizaciones pendientes. Las escrituras usan `AtomicFile` para evitar archivos escritos
-a medias. Antes de dar un guardado por confirmado se verifica la identidad y el
-tamaño del archivo que vuelve a abrir `AtomicFile`, sin leer todo su contenido;
-un reemplazo fallido activa los reintentos. Las instancias consecutivas del servicio comparten un único executor
-para que cerrar y reabrir rápidamente no solape lecturas y escrituras. La cola
-incluye además un punto de recuperación en su mismo archivo: si el checkpoint
-reciente falta o está dañado, se recupera ese punto anterior siempre en pausa.
-La restauración lee la cola progresivamente, sin construir un árbol JSON completo,
-para reducir las copias y objetos necesarios al recuperar bibliotecas grandes.
-Las bibliotecas que exceden los límites de persistencia conservan una ventana de
-hasta 20.000 entradas y 16 MiB que siempre incluye la pista activa; la cola que
-está reproduciéndose no se recorta. Un identificador por escritura evita mezclar
-checkpoints de ventanas diferentes. Los marcadores por archivo se mantienen en
-memoria y se escriben cada 30 segundos, además de hacerlo inmediatamente al
-pausar, desplazarse o cambiar de pista. El checkpoint de la sesión conserva su
-intervalo de dos segundos mientras el guardado funciona. Los marcadores con IDs locales se excluyen del backup
-y de la transferencia a otro dispositivo.
+segundos mientras reproduce, y también al pausar o cambiar de archivo. El servicio
+recibe y conserva únicamente el elemento seleccionado. Al leer una cola de una
+versión anterior, intenta conservar el elemento activo y su posición. Si el
+checkpoint más reciente no puede usarse, la lectura heredada puede recurrir a
+un punto inicial anterior, siempre en pausa.
+
+Las escrituras se hacen fuera del hilo principal mediante `AtomicFile`. El escritor
+admite una tarea activa y el último estado pendiente, para no acumular posiciones
+antiguas si el disco se ralentiza. Una pausa reciente sustituye actualizaciones
+pendientes. El estado vacío deja un registro atómico que impide recuperar una
+selección anterior. La lectura mantiene compatibilidad con el formato de cola
+legado y sus límites de seguridad de 20.000 entradas y 16 MiB; esos límites no
+implican que la reproducción actual mantenga una biblioteca completa en la sesión.
+Los marcadores por archivo se mantienen en memoria y se escriben cada 30 segundos,
+además de hacerlo al pausar, desplazarse o cambiar de archivo. Los IDs locales se
+excluyen del backup y de la transferencia a otro dispositivo.
+
+Desde 2.1.2, las repeticiones automáticas muy rápidas del mismo elemento comparten
+la ventana de dos segundos del checkpoint. La primera vuelta conserva el guardado
+inmediato; las siguientes evitan repetirlo si ya hay una solicitud reciente del
+mismo estado. También se evita escribir un marcador intermedio en cero justo antes
+de guardar la posición actual del mismo audio. Pausar, buscar o cambiar de pista
+conserva su guardado inmediato. No se cambian las muestras, el formato ni la
+velocidad del audio. Si el proceso termina entre dos guardados, puede recuperarse
+la posición de la vuelta anterior dentro de esa ventana, más la latencia del disco.
+
+En una comparación de 12 segundos con un WAV de 200 ms en bucle, el sondeo de
+archivos publicados observó 66 cambios de checkpoint antes y 7 después; los cambios
+del archivo de marcadores fueron 58 y 4. Con un MP3 de 12 segundos se mantuvieron
+6 y 1, respectivamente. Son observaciones de un emulador, no contadores exactos
+de escrituras ni mediciones de batería o sonido físico. La prueba también comprueba
+que el marcador y el checkpoint coincidan al pausar. No acredita por sí sola una
+sesión de 12–24 horas en un Redmi.
 
 La caché propia de marcadores conserva hasta 256 entradas recientes. Antes de
 retirar una entrada vuelca su progreso pendiente, sin borrar el marcador guardado;
@@ -124,23 +150,21 @@ ni afecte las posiciones de otros audios.
 
 Si el almacenamiento impide guardar repetidamente, los intentos del mismo estado
 de sesión esperan progresivamente 2, 4, 8, 16 y hasta 30 segundos. Esa espera se
-aplica mientras se mantienen la misma generación de cola, índice de pista e
+aplica mientras se mantienen la misma generación de sesión, índice de pista e
 intención de reproducir; no limita todas las escrituras de la aplicación. Una pausa
 o búsqueda explícita tiene un intento prioritario, sin esperar ese plazo. Si también
 falla, las siguientes actualizaciones periódicas vuelven a respetar la espera.
 Esto evita repetir trabajo de disco innecesario sin detener el audio. Tras un
 guardado correcto se restablece el ritmo habitual de dos segundos.
 Si no se puede abrir el archivo temporal del guardado, la operación falla antes
-de codificar la cola completa. Una validación fallida después de abrirlo revierte
+de codificar el estado seleccionado. Una validación fallida después de abrirlo revierte
 la escritura y conserva el estado confirmado anterior.
 
 Si Android reinicia el servicio mediante `START_STICKY`, puede retomar
 el último punto guardado en el mismo arranque del dispositivo. Durante ese reinicio,
 promueve inmediatamente el servicio y mantiene despierto el procesador mientras
-lee el estado, sin esperar a que termine la lectura de la cola. Abrir normalmente
-la aplicación restaura la cola en pausa; una pausa manual se conserva.
-Después de restaurar, el servicio conserva únicamente la intención necesaria para
-el reinicio, sin retener una copia de la cola antigua cuando se cambia la biblioteca.
+lee el estado, sin esperar a que termine su lectura. Abrir normalmente
+la aplicación restaura el archivo seleccionado en pausa; una pausa manual se conserva.
 
 Desde 2.1.0, **Reanudar al encender** permite solicitar recuperación automática
 tras un reinicio del teléfono. Está desactivada inicialmente. Solo reproduce si
@@ -160,7 +184,7 @@ La entrega del evento y la política del fabricante deben verificarse en el tel�
 el resultado del emulador no acredita el Redmi ni todas las actualizaciones futuras.
 
 La opción se guarda atómicamente en almacenamiento disponible durante Direct Boot;
-la cola, los marcadores y los archivos siguen en su almacenamiento habitual. El
+el estado de reproducción, los marcadores y los archivos siguen en su almacenamiento habitual. El
 receptor descarta equipos con bloqueo mediante credenciales. Si un teléfono sin PIN
 todavía está desbloqueando el almacenamiento, el servicio prepara la recuperación
 durante un máximo de 30 segundos y espera al aviso de desbloqueo antes de leerlo.
@@ -177,12 +201,12 @@ o no puede identificarla, conserva el volumen actual. La ganancia PCM de la app 
 en uno. Si Android rechaza el ajuste de volumen, se registra el fallo y se intenta
 recuperar la reproducción igualmente.
 
-Ante errores transitorios, reintenta tras 1, 2 y 5 segundos. Si el archivo sigue
-fallando, o no existe o no es compatible, intenta otra pista de la cola. Si todas
-fallan, conserva el servicio en primer plano y espera 30 segundos antes de una
-nueva ronda. La notificación informa de la recuperación sin añadir controles.
-En colas grandes, la recuperación solo revisa los índices que han dejado de ser
-válidos cuando se reduce la cola, evitando repetir esa tarea en cada fallo.
+Ante errores transitorios, reintenta el mismo archivo tras 1, 2 y 5 segundos.
+Si se agotan esos intentos, espera 30 segundos antes de una nueva ronda. Si el
+archivo no existe, no es accesible o no es compatible, espera 30 segundos antes
+de volver a comprobarlo. Nunca cambia automáticamente a otro audiolibro; el usuario
+puede seleccionar otro explícitamente. La notificación informa de la recuperación
+sin añadir controles.
 Un vigilante también intenta recuperar el reproductor si la posición no avanza
 durante 20 segundos, aunque el motor alterne entre preparado y cargando. Exige
 avance real para dar por recuperada la reproducción y reconoce los bucles cortos.
@@ -239,8 +263,8 @@ Una duración de 24 horas requiere una prueba real en el dispositivo de destino.
 Requiere JDK 17 y Android SDK con la plataforma Android 15 / API 35.
 
 ```bash
-git clone https://github.com/gustavoamarohidalgo1-ctrl/Reproductor_28_Octubre.git
-cd Reproductor_28_Octubre
+git clone https://github.com/gustavoamarohidalgo1-ctrl/ReproductoFinal_28deOctubre.git
+cd ReproductoFinal_28deOctubre
 ```
 
 Abre la carpeta raíz en Android Studio para configurar el SDK, o configura
@@ -280,7 +304,7 @@ las pruebas en otros teléfonos conectados; por ejemplo, para `emulator-5554`:
 ANDROID_SERIAL=emulator-5554 ./gradlew connectedDebugAndroidTest
 ```
 
-Las pruebas de integración abren la aplicación y sustituyen temporalmente su cola;
+Las pruebas de integración abren la aplicación y sustituyen temporalmente la selección;
 deben ejecutarse en un entorno de pruebas. La simulación unitaria de 24 horas usa un
 reloj virtual: no equivale a una prueba de sonido o batería de 24 horas en un teléfono.
 
@@ -316,13 +340,14 @@ El módulo `validation` prueba el APK optimizado por IPC con dependencias propia
 del arnés; no desactiva R8 ni modifica permisos de producción. Detalles en
 [validation/README.md](validation/README.md).
 
-Las pruebas también verifican marcadores entre pistas, orden de pausa/selección,
-cola vacía persistente y búsqueda después de 25 horas en un WAV sparse de 27 horas.
-El archivo sparse comprueba duraciones grandes sin escribir gigabytes físicos; no
-representa 27 horas de escucha real.
+Las pruebas incluyen marcadores entre archivos, orden de pausa y selección, estado
+vacío persistente y un WAV sparse de 27 horas: buscan después de 25 horas y prueban
+el paso del final al inicio del mismo archivo. Es una prueba de frontera, no un
+ensayo de 24 horas ni 27 horas de escucha real. Las pruebas nuevas requieren ejecución
+en un dispositivo o emulador; su presencia aquí no acredita que hayan pasado.
 
 El ensayo continuo es optativo y mide tiempo real. Selecciona un dispositivo dedicado;
-reemplaza su cola. El script instala la variante elegida y guarda evidencia JSON:
+reemplaza su selección. El script instala la variante elegida y guarda evidencia JSON:
 
 ```bash
 # Ensayo corto del arnés, seguido de un ensayo real de 24 horas cuando corresponda.
@@ -341,14 +366,49 @@ El informe del ensayo incluye los últimos contadores de salida publicados al
 principio, durante y al final. Pueden llegar con retraso si el hilo de aplicación
 está ocupado; no constituyen una captura física del sonido ni una instantánea IPC
 sincronizada. El ensayo exige al menos dos checkpoints distintos vinculados a la
-cola concreta de la prueba, también cuando su duración es corta.
+sesión concreta de la prueba, también cuando su duración es corta.
+
+El ensayo asistido envía la actividad a segundo plano, solicita apagar la pantalla
+y comprueba su estado durante la ejecución. La instrumentación y el controlador
+permanecen conectados: esa condición se declara en el informe. Conserva una ventana
+acotada de muestras y eventos junto con los contadores totales; los tiempos sin
+reproducción y en buffering son estimaciones por sondeo. Cada ejecución usa un
+identificador propio para rechazar informes anteriores. El script requiere Python 3,
+impone un timeout externo e intenta recuperar la evidencia incluso si falla la prueba.
+Un timeout del equipo anfitrión puede dejar la instrumentación o el audio activos
+en el dispositivo; el informe no se considera una ejecución aprobada.
+
+Para observar una sesión normal ya iniciada, sin instalar ni controlar la app,
+existe un monitor complementario. Requiere un dispositivo de pruebas accesible por
+ADB, reproducción activa, la interfaz en segundo plano y la pantalla apagada:
+
+```bash
+python3 scripts/monitor-background-playback.py \
+  --adb "$ANDROID_HOME/platform-tools/adb" --serial DEVICE_SERIAL \
+  --package com.reproductor.audiolibros --duration 86400 --interval 30 \
+  --output app/build/reports/background-24h
+```
+
+El monitor comprueba el servicio en primer plano y el avance del contador de
+AudioTrack asociado a su proceso, además de la sesión y la pantalla. Rechaza nuevos
+underruns, cambios de proceso o salida y brechas excesivas entre observaciones;
+un formato de diagnóstico que no pueda interpretar no produce una aprobación.
+Guarda las muestras incrementalmente y recoge memoria y CPU periódicamente.
+Su consulta por ADB añade carga y solo acredita las condiciones muestreadas:
+no mide sonido físico, autonomía ni comportamiento específico de HyperOS. La carpeta
+de salida debe ser nueva. No reinicia la reproducción si detecta un fallo.
+
+Las comprobaciones del monitor y del timeout se ejecutan con:
+
+```bash
+python3 -m unittest discover -s scripts/tests -v
+```
 
 ## Instalar en el teléfono
 
-1. Descarga el [APK 2.1.0](https://github.com/gustavoamarohidalgo1-ctrl/Reproductor_28_Octubre/releases/download/v2.1.0/Reproductor-2.1.0.apk)
-   o compílalo con el comando anterior y cópialo al teléfono.
-   La [versión publicada 1.1](https://github.com/gustavoamarohidalgo1-ctrl/ReproductorUltimate/releases/tag/v1.1)
-   es anterior a estas mejoras.
+1. Descarga [Reproductor-2.1.5.apk](https://github.com/gustavoamarohidalgo1-ctrl/ReproductoFinal_28deOctubre/releases/download/v2.1.5/Reproductor-2.1.5.apk)
+   de la [publicación 2.1.5](https://github.com/gustavoamarohidalgo1-ctrl/ReproductoFinal_28deOctubre/releases/tag/v2.1.5),
+   o compílalo con el comando anterior y copia el APK al teléfono.
 2. Ábrelo en el teléfono y permite "instalar apps de origen desconocido".
 3. Al abrir la app, concede el permiso de acceso a audio y notificaciones.
 4. Para uso prolongado, el botón **Evitar restricciones de batería** permite abrir
@@ -381,8 +441,8 @@ distinguir un problema de la aplicación de una restricción del sistema.
 app/src/main/java/com/reproductor/audiolibros/
 ├── MainActivity.kt      # UI: lista de audios + barra de reproducción
 ├── PlaybackService.kt   # Motor aislado, vigilancia y autorización de controles
-├── PlaybackStateStore.kt # Cola y punto de recuperación con escritura atómica
-├── PlaybackRecoveryPolicy.kt # Reintentos, cambio de pista y espera entre rondas
+├── PlaybackStateStore.kt # Estado seleccionado y lectura compatible con colas anteriores
+├── PlaybackRecoveryPolicy.kt # Reintentos del archivo seleccionado y espera entre rondas
 ├── PlaybackProgressWatchdog.kt # Avance real y estabilidad, independiente de Android
 ├── PlaybackNotificationProvider.kt # Notificación informativa sin acciones
 ├── AudioStore.kt        # Consulta MediaStore (audios del dispositivo)

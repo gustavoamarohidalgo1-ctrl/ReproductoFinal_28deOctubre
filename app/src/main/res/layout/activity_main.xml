@@ -107,32 +107,34 @@
                 android:textAppearance="?attr/textAppearanceBodySmall" />
         </LinearLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center"
-            android:orientation="horizontal">
+            android:layout_height="64dp">
 
             <ImageButton
                 android:id="@+id/playPauseButton"
                 android:enabled="false"
                 android:layout_width="64dp"
                 android:layout_height="64dp"
+                android:layout_gravity="center"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:contentDescription="@string/play_audio"
                 android:src="@drawable/ic_play" />
-        </LinearLayout>
+        </FrameLayout>
 
         <com.google.android.material.materialswitch.MaterialSwitch
             android:id="@+id/bootResumeSwitch"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:enabled="false"
+            android:visibility="gone"
             android:text="@string/boot_resume_title" />
 
         <TextView
+            android:id="@+id/bootResumeHelp"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:visibility="gone"
             android:text="@string/boot_resume_help"
             android:textAppearance="?attr/textAppearanceBodySmall" />
 

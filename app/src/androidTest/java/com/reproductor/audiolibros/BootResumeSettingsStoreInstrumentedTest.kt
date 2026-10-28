@@ -30,12 +30,14 @@ class BootResumeSettingsStoreInstrumentedTest {
 
     @After fun cleanup() { directory.deleteRecursively() }
 
-    @Test fun missingDefaultsOffAndBothValuesRoundTrip() {
+    @Test fun missingAndLegacyFalseDefaultOffAndEnablePersists() {
         assertFalse(BootResumeSettingsStore(context).readEnabled())
-        assertTrue(BootResumeSettingsStore(context).write(true))
+        File(directory, "boot_resume.json").writeText("{\"version\":1,\"enabled\":false}")
+        assertFalse(BootResumeSettingsStore(context).readEnabled())
+        assertTrue(BootResumeSettingsStore(context).enable())
         assertTrue(BootResumeSettingsStore(context).readEnabled())
-        assertTrue(BootResumeSettingsStore(context).write(false))
-        assertFalse(BootResumeSettingsStore(context).readEnabled())
+        assertTrue(BootResumeSettingsStore(context).enable())
+        assertTrue(BootResumeSettingsStore(context).readEnabled())
     }
 
     @Test fun corruptAndOversizedFilesFailClosed() {
@@ -51,12 +53,12 @@ class BootResumeSettingsStoreInstrumentedTest {
     @Test @SdkSuppress(minSdkVersion = 30)
     fun failedStagingWritePreservesPreviouslyCommittedSetting() {
         val store = BootResumeSettingsStore(context)
-        assertTrue(store.write(true))
+        assertTrue(store.enable())
         val blocked = File(directory, "boot_resume.json.new")
         assertTrue(blocked.mkdir())
-        try { assertFalse(store.write(false)) } finally { blocked.deleteRecursively() }
+        try { assertFalse(store.enable()) } finally { blocked.deleteRecursively() }
         assertTrue(BootResumeSettingsStore(context).readEnabled())
-        assertTrue(store.write(false))
-        assertFalse(store.readEnabled())
+        assertTrue(store.enable())
+        assertTrue(store.readEnabled())
     }
 }

@@ -30,11 +30,11 @@ class ContinuousAudioBufferInstrumentedTest {
                 )
             val bytesPerSecond = sampleRate * frameSize
             val smallPlatformMinimum = bytesPerSecond / 20
-            assertEquals(bytesPerSecond * 3 / 4, size(provider, smallPlatformMinimum))
+            assertEquals(bytesPerSecond * 2, size(provider, smallPlatformMinimum))
             assertTrue(size(provider, smallPlatformMinimum) > size(defaults, smallPlatformMinimum))
 
-            val largePlatformMinimum = bytesPerSecond / 2
-            assertEquals(bytesPerSecond * 3 / 2, size(provider, largePlatformMinimum))
+            val largePlatformMinimum = bytesPerSecond * 3 / 4
+            assertEquals(bytesPerSecond * 3, size(provider, largePlatformMinimum))
             assertEquals(bytesPerSecond * 3 / 4, size(defaults, largePlatformMinimum))
         }
     }

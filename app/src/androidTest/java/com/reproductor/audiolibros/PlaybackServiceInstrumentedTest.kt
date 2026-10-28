@@ -104,8 +104,8 @@ class PlaybackServiceInstrumentedTest {
             assertEquals(AudioFormat.CHANNEL_OUT_STEREO,
                 extras.getInt(PlaybackTestContract.AUDIO_CHANNEL_MASK))
             val frameSize = Util.getPcmFrameSize(extras.getInt(PlaybackTestContract.AUDIO_ENCODING), 2)
-            assertTrue("The real output must retain at least 750 ms of PCM capacity",
-                extras.getInt(PlaybackTestContract.AUDIO_BUFFER_BYTES) >= 44_100 * frameSize * 3 / 4)
+            assertTrue("The real output must retain at least two seconds of PCM capacity",
+                extras.getInt(PlaybackTestContract.AUDIO_BUFFER_BYTES) >= 44_100 * frameSize * 2)
             assertTrue(extras.containsKey(PlaybackTestContract.AUDIO_UNDERRUNS))
             assertTrue(extras.containsKey(PlaybackTestContract.AUDIO_SINK_ERRORS))
             assertEquals(Player.REPEAT_MODE_ONE, controller.repeatMode)
@@ -296,9 +296,9 @@ class PlaybackServiceInstrumentedTest {
             controller.prepare()
             controller.play()
         }
-        await { controller.isPlaying }
+        await { controller.isPlaying && controller.mediaItemCount == 1 && controller.currentMediaItem?.mediaId == selectedId }
         var previousPosition = onMain {
-            assertEquals(2, controller.mediaItemCount)
+            assertEquals(1, controller.mediaItemCount)
             assertTrue(controller.duration in 750..850)
             controller.addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
@@ -313,12 +313,12 @@ class PlaybackServiceInstrumentedTest {
         var loops = 0
         val deadline = SystemClock.elapsedRealtime() + 26_000
         // Actual 800 ms loops exercise transitions more frequently than the 2 s
-        // heartbeat, for longer than its 20 s stall timeout. A second queue item
-        // detects accidental playlist cycling instead of repeating this selection.
+        // heartbeat, for longer than its 20 s stall timeout. The service retains
+        // only the selected item from the original list.
         while (SystemClock.elapsedRealtime() < deadline) {
             onMain {
                 assertEquals(selectedId, controller.currentMediaItem?.mediaId)
-                assertEquals(1, controller.currentMediaItemIndex)
+                assertEquals(0, controller.currentMediaItemIndex)
                 assertEquals(Player.REPEAT_MODE_ONE, controller.repeatMode)
                 assertFalse(controller.shuffleModeEnabled)
                 assertTrue(controller.playWhenReady)
@@ -338,12 +338,61 @@ class PlaybackServiceInstrumentedTest {
     }
 
     @Test
-    fun unreadableTrackRecoversToPlayableTrack() {
+    fun addingItemsCannotChangeTheSelectedAudiobook() {
+        startSample()
+        await { controller.isPlaying && controller.currentPosition > 500 }
+        val added = sampleItem().buildUpon().setMediaId("continuity-test-unrequested").build()
+        onMain {
+            assertTrue("The barrier seek must target a position not yet reached", controller.currentPosition < 5_000)
+            controller.addMediaItem(added)
+            assertEquals(2, controller.mediaItemCount)
+            // A subsequent native seek on the same controller is a command-order
+            // barrier; a fresh controller observes the service's actual timeline.
+            controller.seekTo(7_000)
+        }
+        val observerFuture = onMain {
+            MediaController.Builder(context, SessionToken(context, PlaybackTestContract.service(context)))
+                .buildAsync()
+        }
+        try {
+            val observer = observerFuture.get(15, TimeUnit.SECONDS)
+            await {
+                observer.currentMediaItem?.mediaId == SAMPLE_ID && observer.isPlaying &&
+                    observer.currentPosition in 7_000L..10_000L
+            }
+            val position = onMain {
+                assertEquals(1, observer.mediaItemCount)
+                assertTrue(observer.playWhenReady)
+                observer.currentPosition
+            }
+            await {
+                assertEquals(1, observer.mediaItemCount)
+                assertEquals(SAMPLE_ID, observer.currentMediaItem?.mediaId)
+                observer.isPlaying && observer.currentPosition > position + 250
+            }
+        } finally {
+            onMain { MediaController.releaseFuture(observerFuture) }
+        }
+    }
+
+    @Test
+    fun unreadableTrackStaysSelectedUntilUserChoosesAnother() {
         onMain {
             controller.setMediaItems(listOf(missingItem(), sampleItem()), 0, 0)
             controller.prepare()
             controller.play()
         }
+        await(15_000) { controller.playerError != null }
+        val deadline = SystemClock.elapsedRealtime() + 32_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            onMain {
+                assertEquals("continuity-test-missing", controller.currentMediaItem?.mediaId)
+                assertEquals(0, controller.currentMediaItemIndex)
+                assertEquals(1, controller.mediaItemCount)
+            }
+            Thread.sleep(250)
+        }
+        onMain { controller.setMediaItem(sampleItem(), 0); controller.prepare(); controller.play() }
         await(20_000) { controller.currentMediaItem?.mediaId == SAMPLE_ID && controller.isPlaying }
         onMain { assertNull(controller.playerError) }
     }
@@ -376,15 +425,19 @@ class PlaybackServiceInstrumentedTest {
             controller.prepare()
             controller.play()
         }
-        // A missing track schedules a retry to index 1. The explicit selection of
-        // index 2 must supersede that captured target, even while the player is IDLE.
+        // Replacing the selected file must supersede the retry, even in IDLE.
         await { controller.playerError != null }
-        onMain { controller.seekTo(2, 7_000) }
+        onMain {
+            controller.setMediaItem(sampleItem().buildUpon().setMediaId(selectedId).build(), 7_000)
+            controller.prepare()
+            controller.play()
+        }
         await { controller.currentMediaItem?.mediaId == selectedId && controller.isPlaying }
         Thread.sleep(1_000)
         onMain {
             assertEquals(selectedId, controller.currentMediaItem?.mediaId)
-            assertEquals(2, controller.currentMediaItemIndex)
+            assertEquals(0, controller.currentMediaItemIndex)
+            assertEquals(1, controller.mediaItemCount)
             assertTrue(controller.currentPosition >= 7_000)
             assertOriginalPlaybackPolicyAndFormat()
         }
@@ -431,12 +484,13 @@ class PlaybackServiceInstrumentedTest {
     @Test
     fun longLocalAudioSeeksPlaysAndPersistsPositionBeyondTwentyFourHours() {
         val longAudio = File(context.filesDir, "continuity-test-27-hours.wav")
+        val longId = "continuity-test-long-${System.nanoTime()}"
         try {
             SparseWaveFixture.create(longAudio, durationSeconds = 27L * 60 * 60)
             val startPositionMs = 25L * 60 * 60 * 1_000 + 12_345
             onMain {
                 controller.setMediaItem(MediaItem.Builder()
-                    .setMediaId("continuity-test-long-${System.nanoTime()}")
+                    .setMediaId(longId)
                     .setUri(Uri.fromFile(longAudio))
                     .build(), startPositionMs)
                 controller.prepare()
@@ -495,7 +549,19 @@ class PlaybackServiceInstrumentedTest {
                 assertFalse(controller.isPlaying)
                 timeCurrent.text.toString() == "0:00" && timeTotal.text.toString() == "27:00:00"
             }
-            onMain { controller.clearMediaItems() }
+            // Boundary test: seek near the real 27 h file's end; this does not
+            // represent 24 h of elapsed playback or an endurance test.
+            val nearEnd = 27L * 60 * 60 * 1_000 - 2_000
+            onMain { controller.seekTo(nearEnd); controller.play() }
+            await { controller.isPlaying && controller.currentPosition >= nearEnd }
+            await(15_000) {
+                assertEquals(longId, controller.currentMediaItem?.mediaId)
+                assertEquals(1, controller.mediaItemCount)
+                assertEquals(Player.REPEAT_MODE_ONE, controller.repeatMode)
+                assertNull(controller.playerError)
+                controller.isPlaying && controller.currentPosition in 200L..5_000L
+            }
+            onMain { controller.pause(); controller.clearMediaItems() }
             await {
                 assertFalse(controller.playWhenReady)
                 assertFalse(controller.isPlaying)
@@ -512,47 +578,35 @@ class PlaybackServiceInstrumentedTest {
     }
 
     @Test
-    fun selectingExistingQueueRestoresEachBookmarkWithoutReplacingPlaylist() {
+    fun selectingTracksRestoresEachBookmarkWithOneItemQueue() {
         val revision = "bookmarks-${System.nanoTime()}"
         val items = listOf(
             sampleItem().buildUpon().setMediaId("$revision-a").build(),
             sampleItem().buildUpon().setMediaId("$revision-b").build()
         )
         onMain {
-            controller.setMediaItems(PlaybackTestContract.attachQueueRevision(items, revision), 1, 3_000)
+            controller.setMediaItems(listOf(items[1]), 0, 3_000)
             controller.prepare()
             controller.play()
         }
         await { controller.isPlaying && controller.currentPosition >= 3_000 }
         onMain { controller.pause() }
-        val playlistChanges = CopyOnWriteArrayList<Int>()
-        onMain {
-            controller.addListener(object : Player.Listener {
-                override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
-                    if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) playlistChanges.add(reason)
-                }
-            })
-        }
-        onMain { selectItem(0) }
-        await { controller.currentMediaItemIndex == 0 && controller.isPlaying }
+        onMain { selectItem(items[0]) }
+        await { controller.currentMediaItem?.mediaId == items[0].mediaId && controller.isPlaying }
         onMain { controller.pause(); controller.seekTo(8_000) }
         await { controller.currentPosition in 7_900..8_100 && !controller.playWhenReady }
-        onMain { selectItem(1) }
-        await { controller.currentMediaItemIndex == 1 && controller.isPlaying }
+        onMain { selectItem(items[1]) }
+        await { controller.currentMediaItem?.mediaId == items[1].mediaId && controller.isPlaying }
         onMain {
             assertTrue("Track B must resume its bookmark", controller.currentPosition in 2_900..5_000)
             controller.pause()
         }
-        onMain { selectItem(0) }
-        await { controller.currentMediaItemIndex == 0 && controller.isPlaying }
+        onMain { selectItem(items[0]) }
+        await { controller.currentMediaItem?.mediaId == items[0].mediaId && controller.isPlaying }
         onMain {
             assertTrue("Track A must resume its bookmark", controller.currentPosition in 7_900..10_000)
-            assertEquals(2, controller.mediaItemCount)
-            assertEquals(revision, controller.sessionExtras.getString(PlaybackTestContract.EXTRA_QUEUE_REVISION))
-            assertEquals(items.map { it.mediaId }, (0 until controller.mediaItemCount)
-                .map { controller.getMediaItemAt(it).mediaId })
+            assertEquals(1, controller.mediaItemCount)
         }
-        assertTrue("Selecting an existing item must not replace the queue", playlistChanges.isEmpty())
     }
 
     @Test
@@ -560,16 +614,16 @@ class PlaybackServiceInstrumentedTest {
         val revision = "selection-${System.nanoTime()}"
         val items = listOf(sampleItem(), sampleItem().buildUpon().setMediaId("$revision-b").build())
         onMain {
-            controller.setMediaItems(PlaybackTestContract.attachQueueRevision(items, revision), 0, 0)
+            controller.setMediaItems(listOf(items[0]), 0, 0)
             controller.prepare()
             controller.play()
         }
         await { controller.isPlaying }
         onMain {
-            selectItem(1)
+            selectItem(items[1])
             controller.pause()
         }
-        await { controller.currentMediaItemIndex == 1 && !controller.playWhenReady }
+        await { controller.currentMediaItem?.mediaId == items[1].mediaId && !controller.playWhenReady }
         Thread.sleep(2_500)
         onMain {
             assertEquals(items[1].mediaId, controller.currentMediaItem?.mediaId)
@@ -603,17 +657,17 @@ class PlaybackServiceInstrumentedTest {
             sampleItem().buildUpon().setMediaId("$revision-b").build()
         )
         onMain {
-            controller.setMediaItems(PlaybackTestContract.attachQueueRevision(items, revision), 0, 6_000)
+            controller.setMediaItems(listOf(items[0]), 0, 6_000)
             controller.prepare()
             controller.play()
         }
         await { controller.isPlaying && controller.currentPosition >= 6_000 }
         onMain {
-            selectItem(1)
+            selectItem(items[1])
             // Native masking must expose B immediately, so tapping A next
             // cannot be mistaken for another tap on the old active item.
             assertEquals(items[1].mediaId, controller.currentMediaItem?.mediaId)
-            selectItem(0)
+            selectItem(items[0])
             assertEquals(items[0].mediaId, controller.currentMediaItem?.mediaId)
         }
         await { controller.currentMediaItemIndex == 0 && controller.isPlaying && controller.currentPosition >= 6_000 }
@@ -621,7 +675,7 @@ class PlaybackServiceInstrumentedTest {
         onMain {
             assertEquals(items[0].mediaId, controller.currentMediaItem?.mediaId)
             assertTrue(controller.currentPosition in 6_000..9_000)
-            assertEquals(revision, controller.sessionExtras.getString(PlaybackTestContract.EXTRA_QUEUE_REVISION))
+            assertEquals(1, controller.mediaItemCount)
         }
     }
 
@@ -633,7 +687,7 @@ class PlaybackServiceInstrumentedTest {
             sampleItem().buildUpon().setMediaId("$revision-b").build()
         )
         onMain {
-            controller.setMediaItems(PlaybackTestContract.attachQueueRevision(items, revision), 0, 0)
+            controller.setMediaItems(listOf(items[0]), 0, 0)
             controller.prepare()
             controller.play()
         }
@@ -643,19 +697,19 @@ class PlaybackServiceInstrumentedTest {
         onMain {
             controller.pause()
             controller.seekTo(8_000)
-            selectItem(1)
+            selectItem(items[1])
         }
-        await { controller.currentMediaItemIndex == 1 && controller.isPlaying }
+        await { controller.currentMediaItem?.mediaId == items[1].mediaId && controller.isPlaying }
         onMain {
             assertTrue("Track B must use its own bookmark", controller.currentPosition < 3_000)
             assertTrue(controller.playWhenReady)
         }
     }
 
-    /** Must run on the controller thread; a native seek resolves bookmarks in the service. */
-    private fun selectItem(index: Int) {
-        controller.seekTo(index, C.TIME_UNSET)
-        if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
+    /** Mirrors selecting a different item in the UI; the service resolves its bookmark. */
+    private fun selectItem(item: MediaItem) {
+        controller.setMediaItems(listOf(item), 0, C.TIME_UNSET)
+        controller.prepare()
         controller.play()
     }
 

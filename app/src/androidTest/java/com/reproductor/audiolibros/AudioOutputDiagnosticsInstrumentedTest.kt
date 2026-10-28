@@ -4,6 +4,7 @@ import android.media.AudioFormat
 import android.os.Bundle
 import androidx.media3.common.C
 import androidx.media3.common.Timeline
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioSink
@@ -15,6 +16,37 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @androidx.annotation.OptIn(UnstableApi::class)
 class AudioOutputDiagnosticsInstrumentedTest {
+    @Test
+    fun stateAndTrackEventsKeepBoundedCountersAndLastMonotonicTimes() {
+        var changes = 0
+        val diagnostics = AudioOutputDiagnostics { changes++ }
+        fun event(now: Long) = AnalyticsListener.EventTime(
+            now, Timeline.EMPTY, 0, null, 0, Timeline.EMPTY, 0, null, 0, C.TIME_UNSET
+        )
+        val config = AudioSink.AudioTrackConfig(C.ENCODING_PCM_FLOAT, 48_000,
+            AudioFormat.CHANNEL_OUT_STEREO, false, false, 384_000)
+        repeat(1_000) {
+            diagnostics.onPlaybackStateChanged(event(it.toLong()), Player.STATE_BUFFERING)
+            diagnostics.onPlaybackStateChanged(event(it.toLong()), Player.STATE_READY)
+        }
+        diagnostics.onIsPlayingChanged(event(1_001), true)
+        diagnostics.onAudioTrackInitialized(event(1_002), config)
+        diagnostics.onAudioTrackReleased(event(1_003), config)
+        val snapshot = Bundle().also(diagnostics::appendTo)
+        assertEquals(2_003, changes)
+        assertEquals(1_000L, snapshot.getLong(AudioOutputDiagnostics.BUFFERING_EVENTS))
+        assertEquals(1_000L, snapshot.getLong(AudioOutputDiagnostics.READY_EVENTS))
+        assertEquals(999L, snapshot.getLong(AudioOutputDiagnostics.LAST_STATE_AT))
+        assertEquals(Player.STATE_READY, snapshot.getInt(AudioOutputDiagnostics.PLAYBACK_STATE))
+        assertEquals(true, snapshot.getBoolean(AudioOutputDiagnostics.IS_PLAYING))
+        assertEquals(1_001L, snapshot.getLong(AudioOutputDiagnostics.LAST_PLAYING_AT))
+        assertEquals(1L, snapshot.getLong(AudioOutputDiagnostics.TRACK_INITIALIZATIONS))
+        assertEquals(1L, snapshot.getLong(AudioOutputDiagnostics.TRACK_RELEASES))
+        assertEquals(1_002L, snapshot.getLong(AudioOutputDiagnostics.LAST_TRACK_INIT_AT))
+        assertEquals(1_003L, snapshot.getLong(AudioOutputDiagnostics.LAST_TRACK_RELEASE_AT))
+        assertEquals(C.TIME_UNSET, snapshot.getLong(AudioOutputDiagnostics.LAST_PLAYER_ERROR_AT))
+    }
+
     @Test
     fun snapshotsCountEventsPreserveUnsetAndAreIndependent() {
         var changes = 0

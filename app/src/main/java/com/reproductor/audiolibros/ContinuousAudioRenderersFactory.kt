@@ -24,6 +24,6 @@ internal open class ContinuousAudioRenderersFactory(context: Context) : DefaultR
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun continuousPcmBufferSizeProvider(): DefaultAudioTrackBufferSizeProvider =
     DefaultAudioTrackBufferSizeProvider.Builder()
-        .setMinPcmBufferDurationUs(750_000)
-        .setMaxPcmBufferDurationUs(1_500_000)
+        .setMinPcmBufferDurationUs(2_000_000)
+        .setMaxPcmBufferDurationUs(3_000_000)
         .build()

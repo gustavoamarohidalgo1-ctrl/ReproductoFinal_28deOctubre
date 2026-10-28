@@ -5,14 +5,19 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.View
+import android.widget.TextView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionToken
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import com.google.common.util.concurrent.ListenableFuture
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -41,23 +46,46 @@ class BootResumeServiceInstrumentedTest {
         val future = onMain { MediaController.Builder(context,
             SessionToken(context, PlaybackTestContract.service(context))).buildAsync() }
         val controller = future.get(15, TimeUnit.SECONDS)
-        var original: Boolean? = null
         val audio = context.getSystemService(AudioManager::class.java)
         val volume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
         try {
             await { controller.sessionExtras.getBoolean(PlaybackTestContract.STATE_RESTORED) }
-            original = onMain { controller.sessionExtras.getBoolean(extra) }
-            fun setEnabled(value: Boolean) {
+            fun setEnabled(value: Boolean): SessionResult {
                 val result = onMain { controller.sendCustomCommand(command, Bundle().apply {
                     putBoolean("enabled", value)
                 }) }.get(15, TimeUnit.SECONDS)
-                assertEquals(SessionResult.RESULT_SUCCESS, result.resultCode)
-                await { controller.sessionExtras.getBoolean(extra) == value }
-                val file = File(context.createDeviceProtectedStorageContext().noBackupFilesDir, "boot_resume.json")
-                assertEquals(value, JSONObject(file.readText()).getBoolean("enabled"))
+                return result
             }
-            setEnabled(false)
-            setEnabled(true)
+            assertEquals(SessionResult.RESULT_SUCCESS, setEnabled(true).resultCode)
+            await { controller.sessionExtras.getBoolean(extra) }
+            await {
+                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .any { PlaybackTestContract.isMainActivity(it) }
+            }
+            val activity = onMain {
+                ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .first { PlaybackTestContract.isMainActivity(it) }
+            }
+            val switchId = context.resources.getIdentifier("bootResumeSwitch", "id", context.packageName)
+            val helpId = context.resources.getIdentifier("bootResumeHelp", "id", context.packageName)
+            val titleId = context.resources.getIdentifier("nowPlayingTitle", "id", context.packageName)
+            val restoringId = context.resources.getIdentifier("restoring_playback", "string", context.packageName)
+            assertTrue(switchId != 0 && helpId != 0 && titleId != 0 && restoringId != 0)
+            await { activity.findViewById<View>(switchId)?.visibility == View.GONE &&
+                activity.findViewById<View>(helpId)?.visibility == View.GONE }
+            onMain { activity.recreate() }
+            await {
+                val recreated = ActivityLifecycleMonitorRegistry.getInstance().getActivitiesInStage(Stage.RESUMED)
+                    .firstOrNull { it !== activity && PlaybackTestContract.isMainActivity(it) }
+                recreated != null && recreated.findViewById<View>(switchId)?.visibility == View.GONE &&
+                    recreated.findViewById<View>(helpId)?.visibility == View.GONE &&
+                    recreated.findViewById<TextView>(titleId)?.text?.toString() != context.getString(restoringId)
+            }
+            val settings = File(context.createDeviceProtectedStorageContext().noBackupFilesDir, "boot_resume.json")
+            assertTrue(JSONObject(settings.readText()).getBoolean("enabled"))
+            assertEquals(SessionError.ERROR_NOT_SUPPORTED, setEnabled(false).resultCode)
+            assertTrue(JSONObject(settings.readText()).getBoolean("enabled"))
+            assertTrue(onMain { controller.sessionExtras.getBoolean(extra) })
             onMain {
                 controller.setMediaItem(MediaItem.Builder().setMediaId("boot-resume-fixture")
                     .setUri(Uri.fromFile(sample)).build())
@@ -78,18 +106,9 @@ class BootResumeServiceInstrumentedTest {
             Thread.sleep(1_000)
             assertFalse(onMain { controller.playWhenReady })
         } finally {
-            try {
-                original?.let { value ->
-                    val result = onMain { controller.sendCustomCommand(command, Bundle().apply {
-                        putBoolean("enabled", value)
-                    }) }
-                    result.get(15, TimeUnit.SECONDS)
-                }
-            } finally {
-                onMain { controller.pause(); controller.clearMediaItems(); MediaController.releaseFuture(future) }
-                if (audio.getStreamVolume(AudioManager.STREAM_MUSIC) != volume)
-                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
-            }
+            onMain { controller.pause(); controller.clearMediaItems(); MediaController.releaseFuture(future) }
+            if (audio.getStreamVolume(AudioManager.STREAM_MUSIC) != volume)
+                audio.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
         }
     }
 

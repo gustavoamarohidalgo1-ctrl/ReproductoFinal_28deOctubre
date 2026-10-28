@@ -3,6 +3,8 @@ package com.reproductor.audiolibros
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
+import android.os.PowerManager
+import android.os.ParcelFileDescriptor
 import android.util.AtomicFile
 import android.util.Log
 import androidx.media3.common.MediaItem
@@ -17,6 +19,8 @@ import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -61,11 +65,23 @@ class LongPlaybackSoakInstrumentedTest {
         val evidenceDirectory = File(context.getExternalFilesDir(null) ?: context.filesDir, "validation")
         check(evidenceDirectory.exists() || evidenceDirectory.mkdirs())
         val evidence = AtomicFile(File(evidenceDirectory, "continuity-soak.json"))
+        val runId = arguments.getString("continuityRunId") ?: "manual-${System.currentTimeMillis()}"
+        val maxNonPlayingMs = (arguments.getString("continuityMaxNonPlayingSeconds")?.toLong() ?: 30L) * 1_000L
+        require(maxNonPlayingMs in 1_000..3_600_000) { "Non-playing limit must be 1..3600 seconds" }
         val samples = JSONArray()
         val errors = CopyOnWriteArrayList<String>()
         val states = CopyOnWriteArrayList<Int>()
+        val stateCount = AtomicLong()
+        val errorCount = AtomicLong()
+        val measuring = AtomicBoolean(false)
+        val idleCount = AtomicLong()
+        val endedCount = AtomicLong()
         val report = JSONObject()
             .put("requestedDurationSeconds", durationSeconds)
+            .put("runId", runId)
+            .put("assistedTest", true)
+            .put("instrumentationAndControllerRemainConnected", true)
+            .put("maxConsecutiveNonPlayingMs", maxNonPlayingMs)
             .put("sourceName", source.name)
             .put("startedAtUnixMs", System.currentTimeMillis())
             .put("elapsedRealtimeMs", 0)
@@ -94,6 +110,20 @@ class LongPlaybackSoakInstrumentedTest {
             report.put("audioUnderrunsAtStart", initialUnderruns)
                 .put("audioSinkErrorsAtStart", initialSinkErrors)
             onMain {
+                active.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        stateCount.incrementAndGet()
+                        if (measuring.get() && playbackState == Player.STATE_IDLE) idleCount.incrementAndGet()
+                        if (measuring.get() && playbackState == Player.STATE_ENDED) endedCount.incrementAndGet()
+                        if (states.size >= 100) states.removeAt(0)
+                        states.add(playbackState)
+                    }
+                    override fun onPlayerError(error: PlaybackException) {
+                        errorCount.incrementAndGet()
+                        if (errors.size >= 100) errors.removeAt(0)
+                        errors.add("${error.errorCodeName}: ${error.message}")
+                    }
+                })
                 active.setMediaItem(MediaItem.Builder()
                     .setMediaId(testMediaId)
                     .setUri(Uri.fromFile(source)).build(), 0)
@@ -101,16 +131,15 @@ class LongPlaybackSoakInstrumentedTest {
                 active.play()
             }
             await { active.isPlaying && active.currentPosition > 0 }
-            onMain {
-                active.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(playbackState: Int) {
-                        states.add(playbackState)
-                    }
-                    override fun onPlayerError(error: PlaybackException) {
-                        errors.add("${error.errorCodeName}: ${error.message}")
-                    }
-                })
-            }
+            shell("input keyevent KEYCODE_HOME")
+            shell("input keyevent KEYCODE_SLEEP")
+            val screenDeadline = SystemClock.elapsedRealtime() + 5_000
+            while (context.getSystemService(PowerManager::class.java).isInteractive &&
+                SystemClock.elapsedRealtime() < screenDeadline) Thread.sleep(100)
+            val screenOff = !context.getSystemService(PowerManager::class.java).isInteractive
+            report.put("screenOffAfterSleepRequest", screenOff)
+            assertTrue("Screen remained interactive after sleep request", screenOff)
+            onMain { measuring.set(true) }
             beganAt = SystemClock.elapsedRealtime()
             var previousPosition = onMain { active.currentPosition }
             var lastProgressAt = beganAt
@@ -123,6 +152,15 @@ class LongPlaybackSoakInstrumentedTest {
             var nextReportAt = beganAt
             var maximumProgressGapMs = 0L
             var observedLoops = 0L
+            var nonPlayingSince: Long? = null
+            var totalNonPlayingMs = 0L
+            var totalBufferingMs = 0L
+            var previousSampleAt = beganAt
+            var previousPlaying = true
+            var previousBuffering = false
+            var sampleCount = 0L
+            var interactiveSamples = 0L
+            var interactiveSince: Long? = null
             report.put("status", "running")
                 .put("sourceDurationMs", onMain { active.duration })
             while (SystemClock.elapsedRealtime() - beganAt < durationSeconds * 1_000) {
@@ -145,13 +183,33 @@ class LongPlaybackSoakInstrumentedTest {
                         .put("positionMs", position)
                         .put("isPlaying", active.isPlaying)
                         .put("playbackState", active.playbackState)
+                        .put("isInteractive", context.getSystemService(PowerManager::class.java).isInteractive)
                         .put("audioUnderrunsServiceLifetime", active.sessionExtras.getLong(PlaybackTestContract.AUDIO_UNDERRUNS))
                         .put("audioSinkErrorsServiceLifetime", active.sessionExtras.getLong(PlaybackTestContract.AUDIO_SINK_ERRORS))
                         .put("outputBufferBytes", active.sessionExtras.getInt(PlaybackTestContract.AUDIO_BUFFER_BYTES))
                 }
+                val interval = (now - previousSampleAt).coerceAtLeast(0)
+                if (!previousPlaying) totalNonPlayingMs += interval
+                if (previousBuffering) totalBufferingMs += interval
+                val playing = sample.getBoolean("isPlaying")
+                if (sample.getBoolean("isInteractive")) {
+                    interactiveSamples++
+                    if (interactiveSince == null) interactiveSince = now
+                } else interactiveSince = null
+                report.put("interactiveSampleCount", interactiveSamples)
+                assertTrue("Screen remained interactive for 5 seconds", interactiveSince?.let { now - it < 5_000 } ?: true)
+                val buffering = sample.getInt("playbackState") == Player.STATE_BUFFERING
+                if (playing) nonPlayingSince = null else if (nonPlayingSince == null) nonPlayingSince = now
+                assertTrue("Playback was not playing for longer than the configured limit",
+                    nonPlayingSince?.let { now - it < maxNonPlayingMs } ?: true)
+                previousPlaying = playing
+                previousBuffering = buffering
+                previousSampleAt = now
+                report.put("estimatedNonPlayingMs", totalNonPlayingMs)
+                    .put("estimatedBufferingMs", totalBufferingMs)
                 assertTrue("Unexpected player errors: $errors", errors.isEmpty())
-                assertFalse("Playback entered IDLE", states.contains(Player.STATE_IDLE))
-                assertFalse("Playback entered ENDED", states.contains(Player.STATE_ENDED))
+                assertEquals("Playback entered IDLE", 0L, idleCount.get())
+                assertEquals("Playback entered ENDED", 0L, endedCount.get())
                 assertTrue("No observed position progress for 30 s", now - lastProgressAt < 30_000)
                 val checkpointPollInterval = if (observedCheckpoints < 2) 1_000 else 5_000
                 if (now - lastCheckpointPollAt >= checkpointPollInterval) {
@@ -184,8 +242,12 @@ class LongPlaybackSoakInstrumentedTest {
                 assertTrue("The durable checkpoint stopped advancing for 60 s",
                     now - lastCheckpointProgressAt < 60_000)
                 if (now >= nextReportAt) {
+                    if (samples.length() >= 120) samples.remove(0)
                     samples.put(sample)
+                    sampleCount++
                     report.put("elapsedRealtimeMs", now - beganAt)
+                        .put("sampleCount", sampleCount)
+                        .put("retainedSampleLimit", 120)
                         .put("observedLoops", observedLoops)
                         .put("maximumObservedProgressGapMs", maximumProgressGapMs)
                         .put("observedCheckpoints", observedCheckpoints)
@@ -194,6 +256,13 @@ class LongPlaybackSoakInstrumentedTest {
                 }
                 Thread.sleep(minOf(1_000, (durationSeconds * 1_000 - (now - beganAt)).coerceAtLeast(1)))
             }
+            val finalInterval = (SystemClock.elapsedRealtime() - previousSampleAt).coerceAtLeast(0)
+            if (!previousPlaying) totalNonPlayingMs += finalInterval
+            if (previousBuffering) totalBufferingMs += finalInterval
+            report.put("estimatedNonPlayingMs", totalNonPlayingMs)
+                .put("estimatedBufferingMs", totalBufferingMs)
+            assertEquals("Playback entered IDLE", 0L, idleCount.get())
+            assertEquals("Playback entered ENDED", 0L, endedCount.get())
             assertTrue("Fewer than two distinct checkpoints belonging to this playback session were observed",
                 observedCheckpoints >= 2)
             // These are the latest published counters, not an IPC barrier. A busy
@@ -212,6 +281,10 @@ class LongPlaybackSoakInstrumentedTest {
         } finally {
             if (beganAt > 0) report.put("elapsedRealtimeMs", SystemClock.elapsedRealtime() - beganAt)
             report.put("finishedAtUnixMs", System.currentTimeMillis())
+                .put("playbackStateEventCount", stateCount.get())
+                .put("playerErrorCount", errorCount.get())
+                .put("idleEventsDuringMeasurement", idleCount.get())
+                .put("endedEventsDuringMeasurement", endedCount.get())
                 .put("playerErrors", JSONArray(errors))
                 .put("playbackStates", JSONArray(states))
             try {
@@ -230,6 +303,11 @@ class LongPlaybackSoakInstrumentedTest {
         // staging files and must not race the remote service's active writer.
         JSONObject(File(context.noBackupFilesDir, name).readText())
     }.getOrNull()
+
+    private fun shell(command: String) {
+        ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
+            .use { it.readBytes() }
+    }
 
     private fun writeReport(file: AtomicFile, report: JSONObject) {
         val output = file.startWrite()

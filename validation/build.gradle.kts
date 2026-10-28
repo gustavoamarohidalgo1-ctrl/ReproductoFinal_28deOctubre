@@ -7,6 +7,8 @@ val sharedServiceTests = setOf(
     "**/BootResumeServiceInstrumentedTest.kt",
     "**/PlaybackServiceInstrumentedTest.kt",
     "**/LongPlaybackSoakInstrumentedTest.kt",
+    "**/LoopPersistenceLoadInstrumentedTest.kt",
+    "**/QueueUpgradeInstrumentedTest.kt",
     "**/ServiceRestartInstrumentedTest.kt",
     "**/SparseWaveFixture.kt",
     "**/PlaybackTestContract.kt"
