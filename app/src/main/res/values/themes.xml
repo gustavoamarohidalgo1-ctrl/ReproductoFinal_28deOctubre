@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Tema negro de fábrica: siempre oscuro, sin seguir el ajuste del sistema. -->
+    <style name="Theme.Reproductor" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorSurface">#000000</item>
+        <item name="android:colorBackground">#000000</item>
+        <item name="colorSurfaceContainer">#161616</item>
+    </style>
+</resources>

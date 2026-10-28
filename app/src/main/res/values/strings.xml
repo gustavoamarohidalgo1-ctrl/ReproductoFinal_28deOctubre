@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Reproductor</string>
+    <string name="empty_list">No se encontraron audios en el dispositivo.\nCopia tus audiolibros a la carpeta Música o Audiolibros.</string>
+    <string name="permission_needed">Se necesita permiso para acceder a tus audios</string>
+    <string name="grant_permission">Conceder permiso</string>
+    <string name="permission_settings">Abrir ajustes de permisos</string>
+    <string name="retry_library">Reintentar</string>
+    <string name="refresh_library">Actualizar biblioteca</string>
+    <string name="library_load_failed">No se pudo actualizar la biblioteca de audios.</string>
+    <string name="uninterrupted_playback">Evitar restricciones de batería</string>
+    <string name="battery_settings_unavailable">No se pudieron abrir los ajustes de batería.</string>
+    <string name="boot_resume_title">Reanudar al encender</string>
+    <string name="boot_resume_help">Si estaba reproduciendo, intenta recuperar la posición y el volumen al encender. Requiere arranque sin PIN y que el fabricante permita el autoarranque.</string>
+    <string name="boot_resume_save_failed">No se pudo guardar la opción de reanudación.</string>
+    <string name="playback_progress">Posición de reproducción</string>
+    <string name="repeat_off">Bucle: apagado</string>
+    <string name="repeat_all">Bucle: repetir toda la lista</string>
+    <string name="repeat_one">Bucle: repetir audio actual</string>
+    <string name="current_audio">Audio actual</string>
+    <string name="not_playing">Nada en reproducción</string>
+    <string name="duration_unknown" translatable="false">--:--</string>
+    <string name="restoring_playback">Recuperando último audio…</string>
+    <string name="play_audio">Reproducir</string>
+    <string name="pause_audio">Pausar</string>
+    <string name="playback_notification_channel">Reproducción continua</string>
+    <string name="playback_notification_playing">Reproduciendo · Toca para abrir la aplicación y pausar</string>
+    <string name="playback_notification_paused">En pausa · Toca para abrir la aplicación</string>
+    <string name="playback_recovering">Recuperando el audio · Toca para abrir la aplicación</string>
+    <string name="playback_waiting_for_files">Audio no disponible · Volveremos a intentarlo</string>
+</resources>

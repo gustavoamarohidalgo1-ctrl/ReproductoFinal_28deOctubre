@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- MediaStore IDs belong to this installation/device, not restored files. -->
+    <exclude domain="sharedpref" path="reproductor_prefs.xml" />
+    <!-- Permission request history is also local to the installation. -->
+    <exclude domain="sharedpref" path="interface.xml" />
+</full-backup-content>

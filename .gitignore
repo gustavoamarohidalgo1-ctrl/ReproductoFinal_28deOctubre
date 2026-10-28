@@ -1,0 +1,28 @@
+# Android / Gradle
+*.iml
+.gradle/
+.kotlin/
+/build/
+/app/build/
+/validation/build/
+/local.properties
+/captures
+.externalNativeBuild
+.cxx
+
+# Android Studio
+/.idea/
+
+# macOS
+.DS_Store
+
+# Local credentials and signing keys
+*.jks
+*.keystore
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+/keystore.properties
+/signing.properties
